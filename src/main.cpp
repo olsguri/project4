@@ -17,6 +17,7 @@
 
 #include "geometry_msgs/PoseWithCovarianceStamped.h"
 
+PID pid_ctrl;
 //map spec
 cv::Mat map;
 double res;
@@ -30,16 +31,23 @@ double world_y_min;
 double world_y_max;
 
 //parameters we should adjust : K, margin, MaxStep
-int margin = 5;
-int K = 500;
+int margin = 4;
+int K = 2000;
 double MaxStep = 2;
 int waypoint_margin = 24;
 
 //way points
 std::vector<point> waypoints;
 
+
 //path
 std::vector<traj> path_RRT;
+
+//entering theta
+std::vector<double> entering_theta;
+
+//path length 
+std::vector<int> path_length;
 
 //robot
 point robot_pose;
@@ -120,18 +128,24 @@ int main(int argc, char** argv){
         case RUNNING: {
                 //TODO 1
 		int current_goal = 1;
-   		PID pid_ctrl;
 		while(ros::ok()) {
-			cmd.drive.speed = 1.0;
+
 			point temp_goal;
 			temp_goal.x = path_RRT[current_goal].x;
 			temp_goal.y = path_RRT[current_goal].y;
 			temp_goal.th = path_RRT[current_goal].th;
-                        cmd.drive.steering_angle = pid_ctrl.get_control(robot_pose, temp_goal);
 			cmd_vel_pub.publish(cmd);
+
+            float ctrl = pid_ctrl.get_control(robot_pose,temp_goal);
+            float speed= 0.9 + 1/fabs(ctrl)/5;
+            if(speed>1.0) speed=1.0;
+            float max_steering = (0.45/speed + 0.6 < 1.18)? 0.45/speed + 0.6 : 1.18;
+            float steering = ctrl*max_steering/3;
+			setcmdvel(speed,steering);
 
 			float check_x = robot_pose.x - path_RRT[current_goal].x;
 			float check_y = robot_pose.y - path_RRT[current_goal].y;
+
 			if (fabs(check_x) < 0.5 && fabs(check_y) < 0.5) {
 			    printf("arrived goal : %d with x : %f, y : %f \n", current_goal, fabs(check_x), fabs(check_y));
 			    pid_ctrl.reset();
@@ -252,7 +266,7 @@ void set_waypoints()
 void generate_path_RRT()
 {
     //TODO 1
-    rrtTree* temp_tree;
+/*    rrtTree* temp_tree;
     traj temp_traj;
     temp_traj.x = waypoints[0].x;
     temp_traj.y = waypoints[0].y;
@@ -276,5 +290,56 @@ void generate_path_RRT()
 
     temp_tree->visualizeTree(path_RRT);
     delete temp_tree;
+	*/
+
+	for(int i=0;i<waypoints.size();i++) 
+	{
+	    entering_theta.push_back(0.0);
+	    path_length.push_back(0);
+	}	
+//      printf("RRT\n");
+        point lastp=waypoints[0];
+	entering_theta[0]=waypoints[0].th;
+
+        for(int i=0; i<waypoints.size()-1; i++){
+                lastp.x=waypoints[i].x;
+                lastp.y=waypoints[i].y;
+                rrtTree *tree = new rrtTree(lastp, waypoints[i+1], map, map_origin_x, map_origin_y, res, margin);
+                tree->generateRRT(world_x_max, world_x_min, world_y_max, world_y_min, K, MaxStep);
+                std::vector<traj> vec = tree->backtracking_traj();
+		if( (vec.begin()->x-waypoints[i+1].x)*(vec.begin()->x-waypoints[i+1].x)+(vec.begin()->y-waypoints[i+1].y)*(vec.begin()->y-waypoints[i+1].y) > 0.04 && i>0 ){
+   		    printf("!!!REFIND THE WAY\n");
+		    printf(" x y %.2f %.2f waypoints %.2f %.2f\n", vec.begin()->x, vec.begin()->y,waypoints[i+1].x, waypoints[i+1].y);
+		    if(i>0){ 
+			 i=i-2; 
+			 lastp.th = entering_theta[i+1];
+ 			 for(int j=0;j<path_length[i+1];j++) path_RRT.pop_back();
+		    }
+		}
+
+//                std::reverse(vec.begin(),vec.end());
+		else{
+		    lastp.x = vec.begin()->x;
+                    lastp.y = vec.begin()->y;
+                    lastp.th = vec.begin()->th;
+		    entering_theta[i+1]= lastp.th;		
+
+                    tree->visualizeTree();
+	    	    std::reverse(vec.begin(),vec.end());
+                    tree->visualizeTree(vec);
+		    path_length[i] = vec.size();
+                    for(int j=0; j<vec.size();j++)
+                        path_RRT.push_back(vec[j]);
+		}
+                delete tree;
+        }
+        traj lastpoint;
+        lastpoint.x=waypoints[waypoints.size()-1].x;
+        lastpoint.y=waypoints[waypoints.size()-1].y;
+        lastpoint.th=waypoints[waypoints.size()-1].th; 
+        path_RRT.push_back(lastpoint);
+
     sleep(5);
+
+
 }
